@@ -449,7 +449,7 @@ def check_list_match(alert, case_txs, docs, data):
         if d.type in ('due_diligence_summary', 'proof_of_address'):
             continue
         if lname and name_in(lname, d.norm):
-            mm = re.search(re.escape(lname) + r'[^.\n|]{0,40}?\bborn\s+(?:on\s+)?([0-9]{1,2}\s+[A-Za-z]+\s+\d{4}|\d{4}-\d{2}-\d{2}|[A-Za-z]+\s+\d{4})', d.text, re.I)
+            mm = re.search(re.escape(lname) + r'[^.\n|]{0,40}?(?:\bborn|\bDOB|\bD\.O\.B\.?|date of birth)\s*(?:on|:|-)?\s*([0-9]{1,2}\s+[A-Za-z]+\s+\d{4}|\d{4}-\d{2}-\d{2}|[A-Za-z]+\s+\d{4})', d.text, re.I)
             if mm:
                 dob = parse_date(mm.group(1))
                 if dob and ldob:
@@ -569,6 +569,9 @@ def decide(case, data, settings):
         rfi.append(('RFI_PURPOSE_DOCUMENTS', [], 'some alerts in the case could not be found, so the activity cannot be confirmed'))
 
     # ---- red flags in notes, chats and reports
+    for code, ids, label in structural_flags(docs, cust, txs, data):
+        esc.append((code, ids, label))
+        trace['flags'].append({'code': code, 'doc': ids[0], 'label': label})
     for code, d, label in collect_red_flags(docs, cust, None) + payment_file_flags(docs):
         esc.append((code, [d.id], '%s %s: %s' % (d.type.replace('_', ' '), d.id, label)))
         trace['flags'].append({'code': code, 'doc': d.id, 'label': label})
@@ -702,7 +705,10 @@ def decide(case, data, settings):
         code = fallback_code(rules, unexplained, cust, docs, txs)
         if VERDICT_OF[code] == 'ESCALATE':
             return finish('ESCALATE', code, [(code, [], '')], explained, unexplained, txs, case, cust, rules, trace)
-        rfi.insert(0, (code, [], ''))
+        if any(r[0] == 'RFI_COUNTERPARTY_DETAILS' for r in rfi):
+            rfi.append((code, [], ''))
+        else:
+            rfi.insert(0, (code, [], ''))
     if rfi:
         return finish('RFI', rfi[0][0], rfi, explained, unexplained, txs, case, cust, rules, trace)
     # everything explained
@@ -726,38 +732,113 @@ def decide(case, data, settings):
 
 
 def fallback_code(rules, unexplained, cust, docs, txs):
+    """No document explains these transactions and no red flag was found: ask (RFI),
+    except where the shape of the activity is itself a recognised typology."""
     biz = cust.get('kind') == 'business'
-    if 'TM03' in rules:
-        return 'ESC_STRUCTURING'
-    if 'TM10' in rules:
-        return 'ESC_EARLY_REDEMPTION'
     chats = [d for d in docs if d.type in ('support_chat', 'staff_note', 'customer_email', 'customer_letter', 'email')]
     outs = [t for t in unexplained if t['direction'] == 'out']
     ins = [t for t in unexplained if t['direction'] == 'in']
-    if 'TM02' in rules and ('TM04' in rules or len(set(t.get('counterparty_name') for t in ins)) > 3):
-        return 'ESC_MULE_ACTIVITY'
-    if 'TM02' in rules and 'TM08' in rules:
-        return 'ESC_THIRD_PARTY_FUNDING'
     third_in = sorted(set(t.get('counterparty_name') or '' for t in ins if name_key(t.get('counterparty_name')) != name_key(cust.get('name'))))
     out_people = sorted(set(t.get('counterparty_name') or '' for t in outs))
     same_amt = len(outs) >= 3 and len(set(round(t['amount_gbp'], 0) for t in outs)) == 1 and len(out_people) >= 2
     if 'TM06' in rules and any(norm(t.get('counterparty_country')) for t in unexplained):
         if (third_in and outs) or same_amt:
             return 'ESC_HIGH_RISK_CORRIDOR'
-        if chats:
-            return 'RFI_PURPOSE_DOCUMENTS'
-        return 'ESC_HIGH_RISK_CORRIDOR'
-    if 'TM02' in rules:
-        return 'ESC_UNEXPLAINED_FUNDS'
+        return 'RFI_PURPOSE_DOCUMENTS'
+    # many unrelated people paying in for varied reasons, then moved on = mule pattern
+    if len(third_in) >= 4 and ('TM02' in rules or outs) and not collection_like(ins):
+        return 'ESC_MULE_ACTIVITY'
+    if 'TM22' in rules:
+        return 'RFI_COUNTERPARTY_DETAILS'
+    if 'TM03' in rules:
+        # amounts just under a limit with no record behind them: ask for the invoices / takings records
+        return 'RFI_PURPOSE_DOCUMENTS' if outs else ('RFI_BUSINESS_RECORDS' if biz else 'RFI_SOURCE_OF_FUNDS')
     if 'TM08' in rules:
         return 'RFI_COUNTERPARTY_DETAILS'
-    if 'TM04' in rules:
-        return 'RFI_BUSINESS_RECORDS' if biz else 'RFI_COUNTERPARTY_DETAILS'
-    if 'TM22' in rules and not ins:
+    if 'TM04' in rules or 'TM02' in rules or 'TM10' in rules:
+        if biz:
+            return 'RFI_BUSINESS_RECORDS'
         return 'RFI_PURPOSE_DOCUMENTS'
     if outs and not ins:
         return 'RFI_PURPOSE_DOCUMENTS'
     return 'RFI_BUSINESS_RECORDS' if biz else 'RFI_SOURCE_OF_FUNDS'
+
+
+def collection_like(ins):
+    """Payments from several people that share a common purpose word (a trip, a collection)."""
+    if len(ins) < 3:
+        return False
+    words = {}
+    for t in ins:
+        for w in set(norm(t.get('reference')).split()):
+            if len(w) > 3 and w not in ('payment', 'transfer', 'thanks', 'from'):
+                words[w] = words.get(w, 0) + 1
+    amts = {}
+    for t in ins:
+        amts[round(t['amount_gbp'], 2)] = amts.get(round(t['amount_gbp'], 2), 0) + 1
+    if max(amts.values()) >= 0.6 * len(ins):
+        return True
+    return any(n >= 0.6 * len(ins) for n in words.values())
+
+
+CLAIMS = [('sale of a car or vehicle', r'sell(?:ing)? my (?:car|motorbike|bike|van|vehicle)|car sale'),
+          ('gift from a relative', r'gift from|present from'),
+          ('loan from a friend', r'loan from'),
+          ('family support', r'family support|help my family'),
+          ('savings kept at home', r'savings|kept it at home|keeping it at home')]
+
+
+def structural_flags(case_docs, cust, txs, data):
+    """Suspicion that comes from the documents taken together."""
+    flags = []
+    # a counterparty that the register shows was dissolved before it paid
+    for d in case_docs:
+        if d.type != 'company_register_extract':
+            continue
+        m = re.search(r'Dissolved(?: on)?\s+([0-9]{1,2}\s+[A-Za-z]+\s+\d{4}|\d{4}-\d{2}-\d{2})', d.text)
+        comp = d.field('Company') or ''
+        if m and comp:
+            dd = parse_date(m.group(1))
+            hits = [t for t in txs if name_key(t.get('counterparty_name')) == name_key(comp) and (not dd or (tx_date(t) and tx_date(t) > dd))]
+            if hits:
+                flags.append(('ESC_UNEXPLAINED_FUNDS', [d.id] + [t['transaction_id'] for t in hits[:3]],
+                              '%s shows %s was dissolved on %s, yet %s in its name moved through the account' % (
+                                  d.id, comp, dd.strftime('%-d %B %Y') if dd else m.group(1), money(sum(t['amount_gbp'] for t in hits)))))
+    # newly formed companies controlled by the customer's own director, with no group structure on file
+    own = [d for d in case_docs if d.type == 'company_register_extract' and name_key(d.field('Company') or '') == name_key(cust.get('name'))]
+    people = set()
+    for d in own:
+        for r in register_rows(d):
+            p = r.get('officer') or r.get('person with significant control') or r.get('person') or ''
+            if p:
+                people.add(name_key(p))
+    if cust.get('kind') == 'individual':
+        people.add(name_key(cust.get('name')))
+    if not any(d.type == 'group_structure' for d in case_docs):
+        linked = []
+        for d in case_docs:
+            if d.type != 'company_register_extract' or d in own or re.search(r'Dissolved', d.text):
+                continue
+            ppl = {name_key(r.get('officer') or r.get('person with significant control') or r.get('person') or '') for r in register_rows(d)}
+            inc = parse_date(d.field('Incorporated') or '')
+            if ppl & people and inc and d.dated and (d.dated - inc).days < 400:
+                linked.append(d)
+        if linked:
+            flags.append(('ESC_PASS_THROUGH', [d.id for d in linked],
+                          'money passes through to newly formed companies controlled by the same person (%s)' % ', '.join(
+                              '%s, incorporated %s, %s' % (d.field('Company'), d.field('Incorporated'), d.id) for d in linked[:2])))
+    # the customer gives different explanations for the same money
+    chats = [d for d in case_docs if d.type in ('support_chat', 'staff_note', 'contact_note')]
+    claims = []
+    for d in chats:
+        for label, pat in CLAIMS:
+            if re.search(pat, d.low):
+                claims.append((label, d))
+    labels = sorted(set(c[0] for c in claims))
+    docs_with = sorted(set(c[1].id for c in claims))
+    if len(labels) >= 2 and len(docs_with) >= 2:
+        flags.append(('ESC_UNEXPLAINED_FUNDS', docs_with, 'the customer gave inconsistent explanations (%s) in %s' % (' and '.join(labels), ', '.join(docs_with))))
+    return flags
 
 
 def _uniq(seq):
