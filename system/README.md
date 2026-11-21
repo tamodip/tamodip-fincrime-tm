@@ -78,6 +78,8 @@ system/run_all_tests.sh            # everything (QUICK=1 skips the stress harnes
 | `tests/stress.py` | Rewrites every case's documents 9 ways, the way hidden data might differ: shuffled order, US and slash dates, `GBP 1,234.00`, spaced thousands, plain labels, UPPER and lower case, synonyms. It then checks that no verdict moves in an unsafe direction (towards CLOSE) | 0 unsafe flips over 4 × 9 × 1,000 runs |
 | `tests/validate.py` | Format: one line per case, alert IDs, verdict↔code family, 2–4 sentences, evidence IDs exist | 4,000 lines, 0 problems |
 | determinism | Runs each institution twice and byte-compares the outputs | identical |
+| 200-case subset | Runs a random 200-case subset (the size of the hidden set) and checks that every line matches the full run, so no case depends on any other | 0 differences |
+| degraded input | Manual check: with `transactions.jsonl` removed, nothing closes (missing alerted transactions mean RFI) | 0 CLOSE |
 
 ## Demo viewer
 
