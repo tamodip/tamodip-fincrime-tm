@@ -885,8 +885,8 @@ def finish(verdict, code, items, explained, unexplained, txs, case, cust, rules,
             ev += lead[0][1]
         if unexplained:
             tot = sum(t['amount_gbp'] for t in unexplained)
-            sents.append('%s: the alerts (%s) are driven by %s totalling %s that no document on file explains (%s).' % (cname,
-                rule_txt, 'transaction' if len(unexplained) == 1 else '%d transactions' % len(unexplained), money(tot),
+            sents.append('%s (%s) %s driven by %s totalling %s that no document on file explains (%s).' % (
+                ('The alerts' if sents else cname + ': the alerts'), rule_txt, 'are', 'one transaction' if len(unexplained) == 1 else '%d transactions' % len(unexplained), money(tot),
                 '; '.join(fmt_tx(t) for t in unexplained[:2])))
             ev += [t['transaction_id'] for t in unexplained[:6]]
         good = [(t, e) for (t, e) in explained if not e.get('routine')]
