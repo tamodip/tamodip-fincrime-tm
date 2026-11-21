@@ -192,7 +192,7 @@ class Data:
 RED_FLAGS = [
     (r"(send|sending|pass|passing|forward|forwarding|transfer|transferring|move|moving) (it|them|the money|the funds|this|that)? ?on\b|payments? assistant|money (transfer|processing) agent|keep \d+ ?%|my (manager|handler|boss) (needs|wants|said)",
      'ESC_MULE_ACTIVITY', 'customer describes receiving other people\'s money and sending it on'),
-    (r"aggregat|cumulative|tallied|added together|below the (?:£[\d,\.]+ )?(?:reporting )?(?:threshold|limit)|under (?:£[\d,\.]+|the (?:threshold|limit))|exempt (?:them|him|her|me|us)? ?from|avoid (?:the )?(?:reporting|identity|id|verification|invoice)|breaking (?:down )?(?:the )?payments|split(?:ting)? (?:the )?(?:payments|deposits)",
+    (r"\bexempt|structur(?:e|ing) (?:the |their |my |our )?(?:payments|deposits|top-?ups|transactions)|(?:instal(?:l)?ments|increments|amounts|deposits|payments|top-?ups) (?:of )?(?:less than|below|under|beneath) £|keep(?:ing)? (?:each |every |individual |the |their |my )?(?:cash )?(?:deposits?|payments?|top-?ups?|amounts?|transactions?) (?:below|under|beneath|less than)|aggregat|cumulative|tallied|added together|below the (?:£[\d,\.]+ )?(?:reporting )?(?:threshold|limit)|under (?:£[\d,\.]+|the (?:threshold|limit))|exempt (?:them|him|her|me|us)? ?from|avoid (?:the )?(?:reporting|identity|id|verification|invoice)|breaking (?:down )?(?:the )?payments|split(?:ting)? (?:the )?(?:payments|deposits)",
      'ESC_STRUCTURING', 'customer asked how to keep amounts under a threshold'),
     (r"investing through mine|invest(?:ing)? for (?:a few people|them|others|friends|other people)|money to invest for them|cannot open an account here|on behalf of (?:my )?(?:friends|cousins|people)",
      'ESC_THIRD_PARTY_FUNDING', 'customer says the account is used for other people\'s money'),
@@ -645,7 +645,7 @@ def decide(case, data, settings):
             mx = max_amt.get(t['transaction_id'], 0)
             own_small = name_key(t.get('counterparty_name')) == name_key(cust.get('name')) and \
                 t['amount_gbp'] <= max((cust.get('declared') or {}).get('monthly_income_gbp') or 0,
-                                     ((cust.get('declared') or {}).get('annual_turnover_gbp') or 0) / 12.0, 2000) and t['amount_gbp'] < 0.25 * mx
+                                     ((cust.get('declared') or {}).get('annual_turnover_gbp') or 0) / 12.0, 2000) and t["amount_gbp"] < 0.5 * mx
             if (own_small or (t['amount_gbp'] < 1000 and t['amount_gbp'] < 0.1 * mx)) and not any(
                     a['rule_id'] in ('TM03', 'TM04', 'TM22', 'TM06') and t['transaction_id'] in (a.get('transaction_ids') or []) for a in alerts):
                 ex = {'code': 'WITHIN_PROFILE', 'docs': [], 'routine': True,
@@ -735,7 +735,12 @@ def fallback_code(rules, unexplained, cust, docs, txs):
         return 'ESC_MULE_ACTIVITY'
     if 'TM02' in rules and 'TM08' in rules:
         return 'ESC_THIRD_PARTY_FUNDING'
+    third_in = sorted(set(t.get('counterparty_name') or '' for t in ins if name_key(t.get('counterparty_name')) != name_key(cust.get('name'))))
+    out_people = sorted(set(t.get('counterparty_name') or '' for t in outs))
+    same_amt = len(outs) >= 3 and len(set(round(t['amount_gbp'], 0) for t in outs)) == 1 and len(out_people) >= 2
     if 'TM06' in rules and any(norm(t.get('counterparty_country')) for t in unexplained):
+        if (third_in and outs) or same_amt:
+            return 'ESC_HIGH_RISK_CORRIDOR'
         if chats:
             return 'RFI_PURPOSE_DOCUMENTS'
         return 'ESC_HIGH_RISK_CORRIDOR'
