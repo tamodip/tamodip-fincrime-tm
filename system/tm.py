@@ -352,6 +352,9 @@ def explain_tx(t, cust, docs, case_txs):
         oh = statement_other_holder(t, cust, docs)
         if oh:
             return {'problem': 'ESC_ACCOUNT_MISUSE', 'docs': [oh[0]], 'note': 'statement %s shows the account is held by %s, not the customer' % (oh[0].id, oh[1])}
+    g = group_link(t, cust, docs)
+    if g:
+        return {'code': 'GROUP_COMPANY', 'docs': [g], 'note': '%s is in the same group as %s according to group structure %s' % (cp, cust.get('name'), g.id)}
     amts = [t['amount_gbp']] + ([t['amount']] if t.get('amount') not in (None, t['amount_gbp']) else [])
     best = None
     for d in docs:
@@ -377,6 +380,10 @@ def explain_tx(t, cust, docs, case_txs):
             pay_to = d.field('Pay to') or d.field('Supplier') or d.field('Payee') or ''
             if pay_to and name_key(cp) not in name_key(pay_to):
                 issue = 'invoice %s names %s as payee, but the money went to %s' % (d.id, pay_to.split(',')[0], cp)
+        if issue is None and d.type in INVOICE_LIKE:
+            gm = goods_mismatch(d, cust)
+            if gm:
+                issue = gm
         cand = (score, d.id, d, code, issue)
         if best is None or cand[:2] > best[:2]:
             best = cand
@@ -562,9 +569,16 @@ def decide(case, data, settings):
         rfi.append(('RFI_PURPOSE_DOCUMENTS', [], 'some alerts in the case could not be found, so the activity cannot be confirmed'))
 
     # ---- red flags in notes, chats and reports
-    for code, d, label in collect_red_flags(docs, cust, None):
+    for code, d, label in collect_red_flags(docs, cust, None) + payment_file_flags(docs):
         esc.append((code, [d.id], '%s %s: %s' % (d.type.replace('_', ' '), d.id, label)))
         trace['flags'].append({'code': code, 'doc': d.id, 'label': label})
+
+    for d in docs:
+        if d.type in INVOICE_LIKE:
+            gm = goods_mismatch(d, cust)
+            if gm:
+                esc.append(('ESC_INVOICE_MISMATCH', [d.id], gm))
+                trace['flags'].append({'code': 'ESC_INVOICE_MISMATCH', 'doc': d.id, 'label': gm})
 
     # ---- internal list
     list_ok = set()
@@ -620,6 +634,8 @@ def decide(case, data, settings):
                           'note': '%s cash paid back in matches the %s cash withdrawal of %s on %s' % (
                               money(t['amount_gbp']), 'same-amount', money(o['amount_gbp']), o['booked_at'][:10]), 'extra': [o['transaction_id']]}
                     break
+        if ex is None and t['direction'] == 'in' and name_key(t.get('counterparty_name')) == name_key(cust.get('name')):
+            ex = own_funding(t, cust, docs, data)
         if ex is None and 'TM07' in rules and reverified and t['direction'] == 'in' and \
                 name_key(t.get('counterparty_name')) == name_key(cust.get('name')):
             st = own_account_statement(t, cust, docs)
@@ -628,7 +644,8 @@ def decide(case, data, settings):
         if ex is None:
             mx = max_amt.get(t['transaction_id'], 0)
             own_small = name_key(t.get('counterparty_name')) == name_key(cust.get('name')) and \
-                t['amount_gbp'] <= max((cust.get('declared') or {}).get('monthly_income_gbp') or 0, 2000) and t['amount_gbp'] < 0.25 * mx
+                t['amount_gbp'] <= max((cust.get('declared') or {}).get('monthly_income_gbp') or 0,
+                                     ((cust.get('declared') or {}).get('annual_turnover_gbp') or 0) / 12.0, 2000) and t['amount_gbp'] < 0.25 * mx
             if (own_small or (t['amount_gbp'] < 1000 and t['amount_gbp'] < 0.1 * mx)) and not any(
                     a['rule_id'] in ('TM03', 'TM04', 'TM22', 'TM06') and t['transaction_id'] in (a.get('transaction_ids') or []) for a in alerts):
                 ex = {'code': 'WITHIN_PROFILE', 'docs': [], 'routine': True,
@@ -832,6 +849,124 @@ def run(folder, out_path, trace_path=None):
         with open(trace_path, 'w', encoding='utf-8') as f:
             json.dump(traces, f, ensure_ascii=False, sort_keys=True, default=str)
     return rows
+
+
+
+# ---------------------------------------------------------------- extra checks (v2)
+CATEGORIES = [
+    ('services', r'consult|advisory|market access|services|management fee|software|developer|marketing'),
+    ('electronics', r'electronic|phone|handset|laptop|semiconductor|chip|tablet'),
+    ('food', r'food|drink|fruit|vegetable|produce|apricot|fig|dates\b|wine|spirit|coffee|tea\b|grocer|restaurant'),
+    ('furniture', r'furniture|sofa|chair|table|wardrobe|hotel'),
+    ('timber', r'timber|wood|lumber|building material|plywood'),
+    ('clothing', r'clothing|apparel|garment|textile|fabric|fashion'),
+    ('machinery', r'machine|machinery|engineering|parts|equipment|tools?\b'),
+    ('catering', r'catering|oven|fridge|kitchen'),
+    ('freight', r'freight|shipping|carrier|haulage|logistics|forwarding'),
+]
+
+
+def categories(text):
+    t = (text or '').lower()
+    return {c for c, p in CATEGORIES if re.search(p, t)}
+
+
+def goods_text(d):
+    g = d.field('Goods') or d.field('Description') or d.field('Scope') or ''
+    if not g:
+        rows = register_rows(d)
+        g = ' '.join(r.get('goods', '') or r.get('description', '') for r in rows)
+    return g
+
+
+def goods_mismatch(d, cust):
+    if cust.get('kind') != 'business':
+        return None
+    g = goods_text(d)
+    gc = categories(g)
+    bc = categories(cust.get('business_activity'))
+    if 'catering' in bc:
+        bc |= {'machinery'}
+    if 'machinery' in bc:
+        bc |= {'catering'}
+    if gc and bc and not (gc & bc):
+        return '%s bills %s, which does not fit %s\'s business (%s)' % (d.id, g.strip().rstrip('.')[:80], cust.get('name'), cust.get('business_activity'))
+    return None
+
+
+def group_link(t, cust, docs):
+    cp = t.get('counterparty_name') or ''
+    if not cp:
+        return None
+    for d in docs:
+        if d.type != 'group_structure':
+            continue
+        if not (name_in(cp, d.norm) and name_in(cust.get('name') or '', d.norm)):
+            continue
+        rows = register_rows(d)
+        owner = {}
+        for r in rows:
+            comp = r.get('company') or ''
+            own = r.get('owned by') or r.get('owner') or r.get('parent') or ''
+            owner[name_key(comp)] = name_key(own)
+
+        def chain(x):
+            seen = [x]
+            while x in owner and owner[x] not in seen:
+                x = owner[x]
+                seen.append(x)
+            return seen
+        a, b = chain(name_key(cust.get('name'))), chain(name_key(cp))
+        if set(a[1:] + a[:1]) & set(b) and (set(a[1:]) & set(b) or name_key(cp) in a or name_key(cust.get('name')) in b):
+            return d
+    return None
+
+
+def payment_file_flags(docs):
+    out = []
+    for d in docs:
+        if d.type != 'payment_file':
+            continue
+        rows = register_rows(d)
+        addr = {}
+        for r in rows:
+            a = norm(r.get('address'))
+            p = r.get('payee') or r.get('contractor') or r.get('name') or ''
+            if a:
+                addr.setdefault(a, set()).add(p)
+        shared = sorted((a, sorted(ps)) for a, ps in addr.items() if len(ps) > 1)
+        if shared:
+            out.append(('ESC_MULE_ACTIVITY', d, 'payment file %s pays %d different people at the same %d addresses (e.g. %s at %s)' % (
+                d.id, sum(len(p) for a, p in shared), len(shared), ', '.join(shared[0][1][:3]), shared[0][0].title())))
+    return out
+
+
+def own_funding(t, cust, docs, data):
+    """Money in from an account in the customer's own name: shown by a statement in their name
+    (the onward leg to their own account), or by supplier invoices / orders it was raised to pay."""
+    td = tx_date(t)
+    mine = [d for d in docs if d.type == 'bank_statement' and name_key(d.field('Account holder') or '') == name_key(cust.get('name'))]
+    outs = [o for o in data.tx_by_cust.get(cust.get('customer_id'), []) if o['direction'] == 'out' and
+            name_key(o.get('counterparty_name')) == name_key(cust.get('name'))]
+    for d in mine:
+        for o in outs:
+            if d.has_amount(o['amount_gbp']) or (o.get('amount') and d.has_amount(o['amount'])) or \
+                    (len(digits(o.get('counterparty_account'))) >= 4 and digits(o.get('counterparty_account'))[-4:] in d.digits):
+                return {'code': 'OWN_ACCOUNT', 'docs': [d], 'extra': [o['transaction_id']],
+                        'note': '%s funding from %s\'s own bank, paid on to its own account at %s (%s, %s)' % (
+                            money(t['amount_gbp']), cust.get('name'), d.field('Bank') or 'another bank', d.id, o['transaction_id'])}
+    invs = [d for d in docs if d.type in ('supplier_invoice', 'supplier_invoices', 'purchase_order') and not goods_mismatch(d, cust)]
+    sup = [d for d in invs if d.type != 'purchase_order']
+    if sup and td:
+        for d in sup:
+            if d.dated and abs((d.dated - td).days) <= 31 and d.amounts and max(d.amounts) <= t['amount_gbp'] * 1.05 and \
+                    max(d.amounts) >= 0.5 * t['amount_gbp']:
+                po = [x for x in invs if x.type == 'purchase_order']
+                return {'code': 'INVOICE_MATCHES', 'docs': [d] + po[:1],
+                        'note': '%s own funding on %s covers supplier invoice %s for %s (%s)%s' % (
+                            money(t['amount_gbp']), td.isoformat(), d.id, goods_text(d).strip()[:60] or 'goods', money(max(d.amounts)),
+                            (', raised for customer order %s' % po[0].id) if po else '')}
+    return None
 
 
 if __name__ == '__main__':
