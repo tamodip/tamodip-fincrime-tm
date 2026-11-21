@@ -449,7 +449,7 @@ def check_list_match(alert, case_txs, docs, data):
         if d.type in ('due_diligence_summary', 'proof_of_address'):
             continue
         if lname and name_in(lname, d.norm):
-            mm = re.search(re.escape(lname) + r'[^.\n|]{0,40}?(?:\bborn|\bDOB|\bD\.O\.B\.?|date of birth)\s*(?:on|:|-)?\s*([0-9]{1,2}\s+[A-Za-z]+\s+\d{4}|\d{4}-\d{2}-\d{2}|[A-Za-z]+\s+\d{4})', d.text, re.I)
+            mm = re.search(re.escape(lname) + r'[^.\n|]{0,40}?(?:\bborn|\bDOB|\bD\.O\.B\.?|date of birth)\s*(?:on|:|-)?\s*([0-9]{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\.?,?\s+\d{4}|[A-Za-z]+\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4}|[A-Za-z]+\s+\d{4})', d.text, re.I)
             if mm:
                 dob = parse_date(mm.group(1))
                 if dob and ldob:
@@ -797,7 +797,7 @@ def structural_flags(case_docs, cust, txs, data):
     for d in case_docs:
         if d.type != 'company_register_extract':
             continue
-        m = re.search(r'Dissolved(?: on)?\s+([0-9]{1,2}\s+[A-Za-z]+\s+\d{4}|\d{4}-\d{2}-\d{2})', d.text)
+        m = re.search(r'Dissolved(?: on)?:?\s+([0-9]{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\.?,?\s+\d{4}|[A-Za-z]+\.?\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})', d.text, re.I)
         comp = d.field('Company') or ''
         if m and comp:
             dd = parse_date(m.group(1))
@@ -819,7 +819,7 @@ def structural_flags(case_docs, cust, txs, data):
     if not any(d.type == 'group_structure' for d in case_docs):
         linked = []
         for d in case_docs:
-            if d.type != 'company_register_extract' or d in own or re.search(r'Dissolved', d.text):
+            if d.type != 'company_register_extract' or d in own or re.search(r'Dissolved', d.text, re.I):
                 continue
             ppl = {name_key(r.get('officer') or r.get('person with significant control') or r.get('person') or '') for r in register_rows(d)}
             inc = parse_date(d.field('Incorporated') or '')
