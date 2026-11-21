@@ -347,8 +347,8 @@ def explain_tx(t, cust, docs, case_txs):
     if own_name or re.search(r'OWN TRANSFER|TO SAVINGS|FROM SAVINGS|OWN ACCOUNT', (t.get('reference') or '').upper()):
         st = own_account_statement(t, cust, docs)
         if st:
-            return {'code': 'OWN_ACCOUNT', 'docs': [st], 'note': '%s %s %s an account in the customer\'s own name, shown by statement %s' % (
-                money(t['amount_gbp']), 'to' if t['direction'] == 'out' else 'from', 'Account at ' + (st.field('Bank') or 'another bank'), st.id)}
+            return {'code': 'OWN_ACCOUNT', 'docs': [st], 'note': '%s %s %s\'s own account at %s (statement %s, held in their name)' % (
+                money(t['amount_gbp']), 'went to' if t['direction'] == 'out' else 'came from', cust.get('name'), st.field('Bank') or 'another bank', st.id)}
         oh = statement_other_holder(t, cust, docs)
         if oh:
             return {'problem': 'ESC_ACCOUNT_MISUSE', 'docs': [oh[0]], 'note': 'statement %s shows the account is held by %s, not the customer' % (oh[0].id, oh[1])}
@@ -393,7 +393,7 @@ def explain_tx(t, cust, docs, case_txs):
             return {'problem': 'ESC_INVOICE_MISMATCH', 'docs': [d], 'note': issue}
         if score >= 2:
             return {'code': code, 'docs': [d], 'note': '%s %s %s matches %s %s' % (
-                money(t['amount_gbp']), 'from' if t['direction'] == 'in' else 'to', cp or t.get('channel'), d.type.replace('_', ' '), d.id)}
+                money(t['amount_gbp']), 'from' if t['direction'] == 'in' else 'to', cp or (t.get('channel') or '').replace('_', ' '), d.type.replace('_', ' '), d.id)}
         if code == 'COLLECTION_DOCUMENTED':
             return {'code': code, 'docs': [d], 'note': '%s is a named participant on %s' % (cp, d.id)}
     # sum match: one document covers several alerted transactions to/from the same party
@@ -704,7 +704,9 @@ def decide(case, data, settings):
     if unexplained:
         code = fallback_code(rules, unexplained, cust, docs, txs)
         if VERDICT_OF[code] == 'ESCALATE':
-            return finish('ESCALATE', code, [(code, [], '')], explained, unexplained, txs, case, cust, rules, trace)
+            ctx_docs = [d.id for d in docs if d.type in ('support_chat', 'staff_note', 'customer_email', 'email', 'company_register_extract') and
+                        (d.type != 'company_register_extract' or name_key(d.field('Company') or '') != name_key(cname))]
+            return finish('ESCALATE', code, [(code, ctx_docs[:3], '')], explained, unexplained, txs, case, cust, rules, trace)
         if any(r[0] == 'RFI_COUNTERPARTY_DETAILS' for r in rfi):
             rfi.append((code, [], ''))
         else:
@@ -857,7 +859,10 @@ def finish(verdict, code, items, explained, unexplained, txs, case, cust, rules,
     if verdict == 'ESCALATE':
         lead = [i for i in main_items if i[2]]
         if lead:
-            sents.append('%s: %s.' % (cname, lead[0][2][0].lower() + lead[0][2][1:] if lead[0][2] else ''))
+            txt = lead[0][2]
+            if txt and not re.match(r'[A-Z]{2,}|[A-Z][a-z]+ [A-Z]', txt):
+                txt = txt[0].lower() + txt[1:]
+            sents.append('%s: %s.' % (cname, txt))
             ev += lead[0][1]
             for extra in [i for i in items if i[2] and i is not lead[0]][:1]:
                 sents.append('Also, %s.' % extra[2])
@@ -869,7 +874,10 @@ def finish(verdict, code, items, explained, unexplained, txs, case, cust, rules,
             ev += [t['transaction_id'] for t in unexplained[:6]]
         if not lead and not unexplained:
             sents.append('%s: the alerts (%s) are not explained by the documents on file.' % (cname, rule_txt))
-        sents.append('There are grounds for suspicion (%s), so the case goes to the MLRO rather than to the customer.' % code)
+        shape = describe_shape(code, unexplained, cust)
+        if shape:
+            sents.insert(1 if lead else 0, shape)
+        sents.append('That is a sign of %s, so the case goes to the MLRO and the customer is not asked (tipping-off risk).' % ESC_WORDS.get(code, 'suspicious activity'))
     elif verdict == 'RFI':
         lead = [i for i in main_items if i[2]]
         if lead:
@@ -877,7 +885,7 @@ def finish(verdict, code, items, explained, unexplained, txs, case, cust, rules,
             ev += lead[0][1]
         if unexplained:
             tot = sum(t['amount_gbp'] for t in unexplained)
-            sents.append('The alerts (%s) are driven by %s totalling %s that no document on file explains (%s).' % (
+            sents.append('%s: the alerts (%s) are driven by %s totalling %s that no document on file explains (%s).' % (cname,
                 rule_txt, 'transaction' if len(unexplained) == 1 else '%d transactions' % len(unexplained), money(tot),
                 '; '.join(fmt_tx(t) for t in unexplained[:2])))
             ev += [t['transaction_id'] for t in unexplained[:6]]
@@ -902,8 +910,11 @@ def finish(verdict, code, items, explained, unexplained, txs, case, cust, rules,
             ev += c[1]
         routine = [(t, e) for (t, e) in explained if e.get('routine')]
         if routine:
-            sents.append('The other alerted items are %s.' % '; '.join(_uniq(e['note'] for (t, e) in routine)[:2]))
+            sents.append(routine_summary(routine))
         sents.append('Every alert in the case (%s) is explained by the evidence, so the case is closed as %s.' % (rule_txt, code))
+    if verdict != 'CLOSE':
+        for c in items:
+            ev += c[1]
     if not ev:
         ev = [t['transaction_id'] for t in txs[:6]]
     reason = ' '.join(s.strip() for s in sents[:4] if s.strip())
@@ -1070,6 +1081,36 @@ def established_payee(t, cust, data, case):
                 'note': '%s is an established payee in %s, paid %d times before the review window (last %s)' % (
                     t.get('counterparty_name'), t.get('counterparty_country') or 'the UK', len(prior), prior[-1]['booked_at'][:10])}
     return None
+
+
+ESC_WORDS = {'ESC_MULE_ACTIVITY': 'money-mule activity', 'ESC_STRUCTURING': 'structuring below a threshold',
+             'ESC_UNEXPLAINED_FUNDS': 'funds with no credible explanation being moved on', 'ESC_PASS_THROUGH': 'pass-through to linked parties',
+             'ESC_INVOICE_MISMATCH': 'invoices that do not support the payments', 'ESC_HIGH_RISK_CORRIDOR': 'unexplained higher-risk corridor activity',
+             'ESC_ACCOUNT_MISUSE': 'someone other than the customer using the account', 'ESC_THIRD_PARTY_FUNDING': 'unrelated third-party funding',
+             'ESC_EARLY_REDEMPTION': 'early redemption used to move money', 'ESC_LISTED_PARTY': 'dealing with a party on the internal list'}
+
+
+def routine_summary(routine):
+    kinds = _uniq([e['note'].split(' such as ')[0] if ' such as ' in e['note'] else e['note'] for (t, e) in routine])
+    small = [t for (t, e) in routine if 'minor next to' in e['note']]
+    parts = [k for k in kinds if not k.startswith('small everyday')][:2]
+    if small:
+        parts.append('%d smaller own-name or everyday transfer%s (largest %s)' % (len(small), '' if len(small) == 1 else 's', money(max(t['amount_gbp'] for t in small))))
+    return 'The rest of the alerted activity is ordinary: %s.' % '; '.join(parts)
+
+
+def describe_shape(code, unexplained, cust):
+    ins = [t for t in unexplained if t['direction'] == 'in']
+    outs = [t for t in unexplained if t['direction'] == 'out']
+    payers = _uniq([t.get('counterparty_name') for t in ins if name_key(t.get('counterparty_name')) != name_key(cust.get('name'))])
+    payees = _uniq([t.get('counterparty_name') for t in outs])
+    ctry = _uniq([t.get('counterparty_country') for t in outs if t.get('counterparty_country') and norm(t.get('counterparty_country')) != 'united kingdom'])
+    if code in ('ESC_HIGH_RISK_CORRIDOR', 'ESC_MULE_ACTIVITY', 'ESC_THIRD_PARTY_FUNDING', 'ESC_PASS_THROUGH', 'ESC_UNEXPLAINED_FUNDS') and payers and outs:
+        return '%s from %d unrelated payer%s (%s) was paid straight out to %s%s.' % (
+            money(sum(t['amount_gbp'] for t in ins)), len(payers), '' if len(payers) == 1 else 's', ', '.join(payers[:3]),
+            ', '.join(payees[:3]) + (' and %d others' % (len(payees) - 3) if len(payees) > 3 else ''),
+            (' in ' + ', '.join(ctry)) if ctry else '')
+    return ''
 
 
 if __name__ == '__main__':
