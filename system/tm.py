@@ -641,6 +641,9 @@ def decide(case, data, settings):
             st = own_account_statement(t, cust, docs)
             if st:
                 ex = {'code': 'OWN_ACCOUNT', 'docs': [st], 'note': 'own funds moved back from %s' % st.id}
+        if ex is None and t['direction'] == 'out' and t['transaction_id'] != case.get('held_payment_id') and not any(
+                a['rule_id'] in ('TM03', 'TM06', 'TM22') and t['transaction_id'] in (a.get('transaction_ids') or []) for a in alerts):
+            ex = established_payee(t, cust, data, case)
         if ex is None:
             mx = max_amt.get(t['transaction_id'], 0)
             own_small = name_key(t.get('counterparty_name')) == name_key(cust.get('name')) and \
@@ -860,7 +863,8 @@ def run(folder, out_path, trace_path=None):
 # ---------------------------------------------------------------- extra checks (v2)
 CATEGORIES = [
     ('services', r'consult|advisory|market access|services|management fee|software|developer|marketing'),
-    ('electronics', r'electronic|phone|handset|laptop|semiconductor|chip|tablet'),
+    ('phones', r'mobile phone|handset|smartphone|iphone'),
+    ('electronics', r'electronic|laptop|semiconductor|chip\b|circuit|component'),
     ('food', r'food|drink|fruit|vegetable|produce|apricot|fig|dates\b|wine|spirit|coffee|tea\b|grocer|restaurant'),
     ('furniture', r'furniture|sofa|chair|table|wardrobe|hotel'),
     ('timber', r'timber|wood|lumber|building material|plywood'),
@@ -964,13 +968,26 @@ def own_funding(t, cust, docs, data):
     sup = [d for d in invs if d.type != 'purchase_order']
     if sup and td:
         for d in sup:
-            if d.dated and abs((d.dated - td).days) <= 31 and d.amounts and max(d.amounts) <= t['amount_gbp'] * 1.05 and \
+            if d.dated and -31 <= (d.dated - td).days <= 3 and d.amounts and max(d.amounts) <= t['amount_gbp'] * 1.05 and \
                     max(d.amounts) >= 0.5 * t['amount_gbp']:
                 po = [x for x in invs if x.type == 'purchase_order']
                 return {'code': 'INVOICE_MATCHES', 'docs': [d] + po[:1],
                         'note': '%s own funding on %s covers supplier invoice %s for %s (%s)%s' % (
                             money(t['amount_gbp']), td.isoformat(), d.id, goods_text(d).strip()[:60] or 'goods', money(max(d.amounts)),
                             (', raised for customer order %s' % po[0].id) if po else '')}
+    return None
+
+
+def established_payee(t, cust, data, case):
+    """A payee the customer has paid repeatedly before the review window, in a declared country."""
+    start = (case.get('review_window') or {}).get('from') or (t.get('booked_at') or '')[:10]
+    prior = [o for o in data.tx_by_cust.get(cust.get('customer_id'), []) if o['direction'] == 'out' and
+             o.get('counterparty_name') == t.get('counterparty_name') and (o.get('booked_at') or '')[:10] < start]
+    exp = {norm(c) for c in ((cust.get('declared') or {}).get('expected_countries') or [])}
+    if len(prior) >= 2 and (not t.get('counterparty_country') or norm(t.get('counterparty_country')) in exp):
+        return {'code': 'WITHIN_PROFILE', 'docs': [], 'routine': True, 'extra': [prior[-1]['transaction_id']],
+                'note': '%s is an established payee in %s, paid %d times before the review window (last %s)' % (
+                    t.get('counterparty_name'), t.get('counterparty_country') or 'the UK', len(prior), prior[-1]['booked_at'][:10])}
     return None
 
 
