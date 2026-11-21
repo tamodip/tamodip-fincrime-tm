@@ -1,0 +1,9 @@
+institutions/
+*.xlsx
+.env
+__pycache__/
+*.pyc
+system/viewer/out/
+demo_out/
+*.html.gen
+screens/*.html

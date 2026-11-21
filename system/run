@@ -1,0 +1,4 @@
+#!/bin/sh
+# Entry point: system/run <institution folder> <output file>
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "$DIR/tm.py" "$@"
