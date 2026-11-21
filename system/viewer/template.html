@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alert Closer — deterministic transaction-monitoring triage</title>
+<style>
+:root{--bg:#0b1220;--panel:#111a2e;--panel2:#16213a;--line:#24324f;--text:#e6ecf7;--muted:#8fa0bf;--accent:#4f8cff;--accent2:#22d3ee;
+--close:#34d399;--rfi:#fbbf24;--esc:#f87171;--r:14px}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif}
+.wrap{max-width:1480px;margin:0 auto;padding:26px 32px 60px}
+header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap}
+h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}
+h1 span{color:var(--accent2)}
+.sub{color:var(--muted)}
+.badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.badge{border:1px solid var(--line);background:var(--panel);padding:5px 11px;border-radius:999px;font-size:12px;display:inline-flex;gap:6px;align-items:center}
+.badge i{width:8px;height:8px;border-radius:50%;background:var(--accent2);display:inline-block}
+.tabs{display:flex;gap:8px;margin-top:20px;flex-wrap:wrap}
+.tabs button{background:var(--panel);border:1px solid var(--line);color:var(--muted);padding:9px 16px;border-radius:12px;cursor:pointer;font:inherit;font-weight:600}
+.tabs button.on{color:var(--text);border-color:var(--accent);background:#14244a}
+.grid{display:grid;gap:16px}
+.kpis{grid-template-columns:repeat(6,minmax(0,1fr));margin-top:18px}
+.card{background:linear-gradient(180deg,var(--panel),#0f182b);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px}
+.kpi .v{font-size:28px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.kpi .l{color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.08em}
+.kpi .s{color:var(--muted);font-size:12px}
+.c-CLOSE{color:var(--close)}.c-RFI{color:var(--rfi)}.c-ESCALATE{color:var(--esc)}
+.row2{grid-template-columns:1.1fr 1.2fr .9fr;margin-top:16px}
+h2{font-size:12.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin:0 0 12px;font-weight:600}
+.mix .m{display:grid;grid-template-columns:150px 1fr 60px;gap:10px;align-items:center;margin:9px 0;font-size:13px}
+.stack{display:flex;height:14px;border-radius:999px;overflow:hidden;background:var(--panel2)}
+.stack div{height:100%}
+.legend{display:flex;gap:16px;color:var(--muted);font-size:12px;margin-top:10px}
+.legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px;background:var(--c)}
+.bars .b{display:grid;grid-template-columns:230px 1fr 44px;gap:10px;align-items:center;margin:5px 0;font-size:12.5px;cursor:pointer}
+.bars .b:hover .lab{color:var(--accent2)}
+.bars .t{height:9px;border-radius:6px;background:var(--panel2);overflow:hidden}
+.bars .t div{height:100%;border-radius:6px}
+.bars .n{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+.demo a{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:9px 12px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;text-decoration:none;color:var(--text);background:var(--panel2);font-size:13px}
+.demo a:hover{border-color:var(--accent)}
+.toolbar{display:flex;gap:10px;align-items:center;margin:22px 0 12px;flex-wrap:wrap}
+.toolbar input,.toolbar select{background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:9px 12px;font:inherit}
+.toolbar input{flex:1;min-width:260px}
+.chipf{display:flex;gap:6px}
+.chipf button{background:var(--panel);border:1px solid var(--line);color:var(--muted);padding:8px 12px;border-radius:999px;cursor:pointer;font:inherit}
+.chipf button.on{color:var(--text);border-color:var(--accent);background:#14244a}
+.count{color:var(--muted);font-size:12px;margin-left:auto}
+table{width:100%;border-collapse:separate;border-spacing:0}
+.tbl{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;max-height:64vh;overflow-y:auto;background:var(--panel)}
+th{position:sticky;top:0;background:#0f1930;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);padding:10px 12px;border-bottom:1px solid var(--line);z-index:1}
+td{padding:9px 12px;border-bottom:1px solid #1b2742;vertical-align:top}
+tr.r{cursor:pointer}
+tr.r:hover td{background:#14203a}
+.mono{white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:700;letter-spacing:.03em;white-space:nowrap}
+.p-CLOSE{background:rgba(52,211,153,.14);color:var(--close);border:1px solid rgba(52,211,153,.35)}
+.p-RFI{background:rgba(251,191,36,.14);color:var(--rfi);border:1px solid rgba(251,191,36,.35)}
+.p-ESCALATE{background:rgba(248,113,113,.14);color:var(--esc);border:1px solid rgba(248,113,113,.35)}
+.rule{display:inline-block;padding:1px 7px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);font-size:11px;margin:0 3px 3px 0;font-family:ui-monospace,Menlo,monospace}
+.code{color:var(--muted);font-size:12px}
+.reason{color:#b9c6de;font-size:12.5px;max-width:620px}
+.shade{position:fixed;inset:0;background:rgba(3,7,18,.55);opacity:0;pointer-events:none;transition:.2s}
+.shade.on{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:0;height:100vh;width:min(1100px,96vw);background:var(--bg);border-left:1px solid var(--line);transform:translateX(102%);transition:transform .25s ease;overflow-y:auto;z-index:10;box-shadow:-30px 0 60px rgba(0,0,0,.4)}
+.drawer.on{transform:none}
+.dh{position:sticky;top:0;background:rgba(11,18,32,.96);backdrop-filter:blur(6px);padding:16px 26px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px;z-index:2}
+.dh h3{margin:0;font-size:20px}
+.db{padding:18px 26px 40px}
+.x{background:none;border:1px solid var(--line);color:var(--muted);border-radius:10px;padding:6px 12px;cursor:pointer;font:inherit}
+.verdict{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.verdict .pill{font-size:15px;padding:6px 16px}
+.why{font-size:14.5px;line-height:1.6;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;padding:12px 16px;margin-bottom:18px}
+.two{display:grid;grid-template-columns:1fr 1.3fr;gap:16px}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:4px 12px;font-size:13px}
+.kv div:nth-child(odd){color:var(--muted)}
+.sec{margin-top:20px}
+.alert{border:1px solid var(--line);border-radius:10px;padding:9px 12px;margin-bottom:8px;background:var(--panel)}
+.tx td{font-size:12.5px;padding:7px 9px}
+.st{font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;white-space:nowrap}
+.st-ok{background:rgba(52,211,153,.14);color:var(--close)}
+.st-rt{background:rgba(143,160,191,.14);color:var(--muted)}
+.st-no{background:rgba(251,191,36,.16);color:var(--rfi)}
+.st-bad{background:rgba(248,113,113,.16);color:var(--esc)}
+.flag{border:1px solid rgba(248,113,113,.4);background:rgba(248,113,113,.08);border-radius:10px;padding:9px 12px;margin-bottom:8px}
+.chk{border:1px solid var(--line);border-radius:10px;padding:9px 12px;margin-bottom:8px;background:var(--panel)}
+details.doc{border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background:var(--panel)}
+details.doc summary{cursor:pointer;padding:9px 12px;display:flex;gap:10px;align-items:center}
+details.doc.cited{border-color:rgba(79,140,255,.6)}
+details.doc pre{white-space:pre-wrap;margin:0;padding:10px 14px 14px;border-top:1px solid var(--line);font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace;color:#cfd9ec}
+.tag{font-size:10.5px;padding:1px 6px;border-radius:6px;background:#1b2d57;color:#9cc0ff;font-weight:700;letter-spacing:.04em}
+.muted{color:var(--muted)}
+.foot{color:var(--muted);font-size:12px;margin-top:28px;text-align:center}
+@media (max-width:1100px){.kpis{grid-template-columns:repeat(3,1fr)}.row2,.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div>
+    <h1>Alert Closer <span>·</span> transaction-monitoring triage</h1>
+    <div class="sub">Every alert closed, asked about or escalated by fixed rules over the institution's own policy and evidence. Click any case for the full audit trail.</div>
+    <div class="badges">
+      <span class="badge"><i></i>Deterministic: same input, byte-identical output</span>
+      <span class="badge"><i style="background:#34d399"></i>No model · no network · Python stdlib</span>
+      <span class="badge"><i style="background:#fbbf24"></i>$0 per run</span>
+      <span class="badge" id="rtbadge"><i style="background:#f472b6"></i>run time</span>
+    </div>
+  </div>
+</header>
+<div class="tabs" id="tabs"></div>
+<div class="grid kpis" id="kpis"></div>
+<div class="grid row2">
+  <div class="card mix"><h2>Verdict mix by institution</h2><div id="mix"></div>
+    <div class="legend"><span style="--c:var(--close)">CLOSE</span><span style="--c:var(--rfi)">RFI</span><span style="--c:var(--esc)">ESCALATE</span></div></div>
+  <div class="card bars"><h2>Reason codes <span class="muted" style="text-transform:none;letter-spacing:0">(click to filter)</span></h2><div id="codes"></div></div>
+  <div class="card demo"><h2>Demo cases</h2><div id="demo"></div></div>
+</div>
+<div class="toolbar">
+  <input id="q" placeholder="Search case, customer, document ID, reason text…" autocomplete="off">
+  <div class="chipf" id="vf"></div>
+  <select id="rf"><option value="">All rules</option></select>
+  <span class="count" id="cnt"></span>
+</div>
+<div class="tbl"><table><thead><tr><th>Case</th><th>Institution</th><th>Customer</th><th>Rules</th><th>Verdict</th><th>Reason</th></tr></thead><tbody id="tb"></tbody></table></div>
+<div class="foot">Generated offline from the system's own output and engine trace. Contains development data: do not commit.</div>
+</div>
+<div class="shade" id="shade"></div>
+<aside class="drawer" id="drawer"><div class="dh"><h3 id="dt"></h3><button class="x" id="close">Close ✕</button></div><div class="db" id="dbody"></div></aside>
+<script>
+const D = /*__DATA__*/null;
+const V = ['CLOSE','RFI','ESCALATE'];
+const COL = {CLOSE:'var(--close)',RFI:'var(--rfi)',ESCALATE:'var(--esc)'};
+const VOF = c => c.startsWith('ESC_')?'ESCALATE':(c.startsWith('RFI_')?'RFI':'CLOSE');
+const RULES = {TM01:'Activity above profile',TM02:'Rapid movement of funds',TM03:'Below-threshold repeats',TM04:'Many-to-one / one-to-many',TM05:'Large cash',TM06:'Higher-risk corridor',TM07:'Dormant reactivation',TM08:'Third-party funding',TM10:'Early fund redemption',TM22:'Internal list match'};
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const gbp = n => '£'+Number(n).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2});
+let inst = 'ALL', vf = '', codeF = '';
+const all = [];
+D.insts.forEach(I => I.cases.forEach(c => { c.inst = I.key; c.instName = I.name; all.push(c); }));
+const byId = {}; all.forEach(c => byId[c.id] = c);
+function pool(){ return inst==='ALL' ? all : all.filter(c=>c.inst===inst); }
+function tabs(){
+  const t = document.getElementById('tabs');
+  t.innerHTML = [['ALL','All institutions']].concat(D.insts.map(I=>[I.key,I.name])).map(([k,n])=>`<button data-k="${k}" class="${k===inst?'on':''}">${esc(n)}</button>`).join('');
+  t.querySelectorAll('button').forEach(b=>b.onclick=()=>{inst=b.dataset.k; codeF=''; render();});
+}
+function kpis(){
+  const P = pool(), n = P.length, m = {CLOSE:0,RFI:0,ESCALATE:0}; P.forEach(c=>m[c.v]++);
+  const insts = inst==='ALL'?D.insts:D.insts.filter(I=>I.key===inst);
+  const rt = insts.reduce((a,I)=>a+(I.runtime||0),0);
+  document.getElementById('rtbadge').innerHTML = `<i style="background:#f472b6"></i>${rt?rt.toFixed(1)+'s for '+n+' cases':'run time n/a'}`;
+  const pct = x => n? (100*x/n).toFixed(0)+'%':'';
+  document.getElementById('kpis').innerHTML = [
+    ['Cases triaged', n, insts.length+' institution'+(insts.length>1?'s':'')],
+    ['Closed', `<span class="c-CLOSE">${m.CLOSE}</span>`, pct(m.CLOSE)+' explained by evidence'],
+    ['RFI', `<span class="c-RFI">${m.RFI}</span>`, pct(m.RFI)+' one document would settle it'],
+    ['Escalated', `<span class="c-ESCALATE">${m.ESCALATE}</span>`, pct(m.ESCALATE)+' signs of crime → MLRO'],
+    ['Run time', rt? rt.toFixed(1)+'s':'–', rt? (1000*rt/Math.max(n,1)).toFixed(1)+' ms per case':''],
+    ['Cost', '$0.00', 'no API calls, no model'],
+  ].map(([l,v,s])=>`<div class="card kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join('');
+}
+function mix(){
+  document.getElementById('mix').innerHTML = D.insts.map(I=>{
+    const n=I.n||1; return `<div class="m"><div>${esc(I.name)}</div><div class="stack">${V.map(v=>`<div title="${v} ${I.mix[v]||0}" style="width:${100*(I.mix[v]||0)/n}%;background:${COL[v]}"></div>`).join('')}</div><div class="muted mono">${I.n}</div></div>`;
+  }).join('');
+}
+function codes(){
+  const cnt = {}; pool().forEach(c=>cnt[c.code]=(cnt[c.code]||0)+1);
+  const rows = Object.entries(cnt).sort((a,b)=>V.indexOf(VOF(a[0]))-V.indexOf(VOF(b[0]))||b[1]-a[1]);
+  const mx = Math.max(...rows.map(r=>r[1]),1);
+  document.getElementById('codes').innerHTML = rows.map(([k,n])=>`<div class="b" data-c="${k}"><div class="lab mono" style="${codeF===k?'color:var(--accent2)':''}">${k}</div><div class="t"><div style="width:${100*n/mx}%;background:${COL[VOF(k)]}"></div></div><div class="n">${n}</div></div>`).join('');
+  document.querySelectorAll('#codes .b').forEach(b=>b.onclick=()=>{codeF = codeF===b.dataset.c?'':b.dataset.c; render();});
+}
+function demo(){
+  const pick = (pred) => all.find(pred);
+  const want = [
+    ['Close · invoice matches', c=>c.code==='INVOICE_MATCHES'&&c.rules.includes('TM06')],
+    ['Close · list match, different party', c=>c.code==='LIST_MATCH_DIFFERENT_PARTY'&&c.inst==='investment'],
+    ['Close · own funding to own account', c=>c.code==='OWN_ACCOUNT'&&c.inst==='payments_fx'],
+    ['RFI · updated profile (own-account ≥5×)', c=>c.code==='RFI_UPDATED_PROFILE'],
+    ['RFI · list hit, nothing on file', c=>c.code==='RFI_COUNTERPARTY_DETAILS'&&c.rules.includes('TM22')],
+    ['Escalate · listed director still in control', c=>c.code==='ESC_LISTED_PARTY'&&c.inst==='payments_fx'],
+    ['Escalate · structuring question', c=>c.code==='ESC_STRUCTURING'&&c.inst==='payments_fx'],
+    ['Escalate · mule (scam victims)', c=>c.code==='ESC_MULE_ACTIVITY'&&c.flags.some(f=>/scam/.test(f.label))],
+  ];
+  document.getElementById('demo').innerHTML = want.map(([l,p])=>{const c=pick(p); return c?`<a href="#${c.id}"><span>${l}</span><span class="pill p-${c.v}">${c.id}</span></a>`:'';}).join('');
+}
+function table(){
+  const q = document.getElementById('q').value.trim().toLowerCase();
+  const rf = document.getElementById('rf').value;
+  const rows = pool().filter(c => (!vf||c.v===vf) && (!codeF||c.code===codeF) && (!rf||c.rules.includes(rf)) &&
+    (!q || (c.id+' '+c.cust.name+' '+c.reason+' '+c.ev.join(' ')+' '+c.code).toLowerCase().includes(q)));
+  document.getElementById('cnt').textContent = rows.length+' of '+pool().length+' cases';
+  document.getElementById('tb').innerHTML = rows.slice(0,600).map(c=>`<tr class="r" data-id="${c.id}"><td class="mono">${c.id}</td><td class="muted">${esc(c.instName)}</td><td>${esc(c.cust.name)}<div class="muted" style="font-size:12px">${esc(c.cust.occ||'')}</div></td><td>${c.rules.map(r=>`<span class="rule" title="${RULES[r]||''}">${r}</span>`).join('')}</td><td><span class="pill p-${c.v}">${c.v}</span><div class="code mono">${c.code}</div></td><td class="reason">${esc(c.reason.length>230?c.reason.slice(0,230)+'…':c.reason)}</td></tr>`).join('');
+  document.querySelectorAll('#tb tr').forEach(tr=>tr.onclick=()=>{location.hash=tr.dataset.id;});
+}
+function stBadge(t){
+  if(!t.res) return '<span class="st st-rt">context</span>';
+  if(t.res==='UNEXPLAINED') return '<span class="st st-no">✗ unexplained</span>';
+  if(t.res.startsWith('ESC_')) return `<span class="st st-bad">⚠ ${t.res}</span>`;
+  if(t.res==='WITHIN_PROFILE' && /routine|salary|minor|established|takings/.test(t.note)) return '<span class="st st-rt">✓ routine</span>';
+  return `<span class="st st-ok">✓ ${t.res}</span>`;
+}
+function open(id){
+  const c = byId[id]; if(!c) return;
+  document.getElementById('dt').innerHTML = `${c.id} <span class="muted" style="font-size:14px;font-weight:400">· ${esc(c.instName)} · ${esc(c.cust.name)}</span>`;
+  const d = c.cust.declared||{};
+  const inc = d.monthly_income_gbp? gbp(d.monthly_income_gbp)+' / month' : (d.annual_turnover_gbp? gbp(d.annual_turnover_gbp)+' / year':'–');
+  const evset = new Set(c.ev);
+  let h = `<div class="verdict"><span class="pill p-${c.v}">${c.v}</span><span class="mono">${c.code}</span><span class="muted">${c.alerts.length} alert${c.alerts.length>1?'s':''} · window ${c.window?esc(c.window.from+' → '+c.window.to):''}${c.held?' · held payment '+esc(c.held):''}</span></div>`;
+  h += `<div class="why">${esc(c.reason)}<div style="margin-top:8px">${c.ev.map(e=>`<span class="rule">${esc(e)}</span>`).join('')}</div></div>`;
+  h += `<div class="two"><div class="card"><h2>Customer & declared profile</h2><div class="kv">
+    <div>Name</div><div>${esc(c.cust.name)} <span class="muted">(${esc(c.cust.kind||'')}, ${esc(c.cust.id||'')})</span></div>
+    <div>Occupation / business</div><div>${esc(c.cust.occ||'–')}</div>
+    <div>Declared income</div><div>${inc}</div>
+    <div>Source of funds</div><div>${esc(d.source_of_funds||'–')}</div>
+    <div>Expected countries</div><div>${esc((d.expected_countries||[]).join(', ')||'–')}</div>
+    <div>Risk rating</div><div>${esc(c.cust.risk||'–')}</div></div></div>
+    <div class="card"><h2>Alerts in this case</h2>${c.alerts.map(a=>`<div class="alert"><span class="rule">${a.rule}</span> <b>${esc(RULES[a.rule]||a.name||'')}</b><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(a.msg)}</div></div>`).join('')}</div></div>`;
+  if(c.flags.length) h += `<div class="sec"><h2>Red flags that forced escalation</h2>${c.flags.map(f=>`<div class="flag"><b class="mono" style="color:var(--esc)">${esc(f.code)}</b> · <span class="mono">${esc(f.doc)}</span><div>${esc(f.label)}</div></div>`).join('')}</div>`;
+  if(c.checks.length) h += `<div class="sec"><h2>Checks</h2>${c.checks.map(k=>`<div class="chk"><span class="rule">${esc(k.rule||'')}</span> <b class="mono">${esc(k.result)}</b><div class="muted">${esc(k.note||'')}</div></div>`).join('')}</div>`;
+  h += `<div class="sec"><h2>Flagged transactions and how each was explained</h2><div class="tbl" style="max-height:none"><table class="tx"><thead><tr><th>Date</th><th>Transaction</th><th>Direction</th><th>Counterparty</th><th style="text-align:right">Amount</th><th>Reference</th><th>Engine finding</th></tr></thead><tbody>${
+    c.txs.map(t=>`<tr><td class="mono">${t.d}</td><td class="mono">${esc(t.id)}${t.held?' <span class="tag">HELD</span>':''}${evset.has(t.id)?' <span class="tag">CITED</span>':''}</td><td>${t.dir==='in'?'⬇ in':'⬆ out'} <span class="muted">${esc((t.ch||'').replace('_',' '))}</span></td><td>${esc(t.cp||'–')}<div class="muted" style="font-size:11.5px">${esc(t.ctry||'')}</div></td><td class="mono" style="text-align:right">${gbp(t.amt)}</td><td class="muted">${esc(t.ref||'')}</td><td>${stBadge(t)}<div class="muted" style="font-size:11.5px;max-width:300px">${esc(t.note||'')}</div></td></tr>`).join('')}</tbody></table></div></div>`;
+  const L = Object.values(c.list||{});
+  if(L.length) h += `<div class="sec"><h2>Internal list entries</h2>${L.map(e=>`<div class="chk"><b class="mono">${esc(e.entry_id)}</b> · ${esc(e.name)} · born ${esc(e.date_of_birth||'?')}${e.address?' · '+esc(e.address):''}<div class="muted">${esc(e.reason||'')}</div></div>`).join('')}</div>`;
+  if(c.prev.length) h += `<div class="sec"><h2>Previous reviews <span class="muted" style="text-transform:none;letter-spacing:0">(cover only what they describe)</span></h2>${c.prev.map(p=>`<div class="chk"><span class="mono">${esc(p.review_id)}</span> · ${esc(p.reviewed_on)} · <span class="rule">${esc(p.rule_id)}</span> ${esc(p.verdict)}<div class="muted">${esc(p.note)}</div></div>`).join('')}</div>`;
+  h += `<div class="sec"><h2>Documents on file <span class="muted" style="text-transform:none;letter-spacing:0">(cited ones first, raw text)</span></h2>${c.docs.map(x=>`<details class="doc ${x.cited?'cited':''}" ${x.cited?'open':''}><summary>${x.cited?'<span class="tag">CITED</span>':''}<b class="mono">${esc(x.id)}</b><span>${esc(x.type.replace(/_/g,' '))}</span><span class="muted">${esc(x.dated)}</span></summary><pre>${esc(x.text)}</pre></details>`).join('')}</div>`;
+  document.getElementById('dbody').innerHTML = h;
+  document.getElementById('drawer').classList.add('on'); document.getElementById('shade').classList.add('on');
+  document.getElementById('drawer').scrollTop = 0;
+}
+function shut(){ document.getElementById('drawer').classList.remove('on'); document.getElementById('shade').classList.remove('on'); if(location.hash) history.replaceState(null,'',location.pathname); }
+function render(){ tabs(); kpis(); mix(); codes(); table(); }
+document.getElementById('vf').innerHTML = ['','CLOSE','RFI','ESCALATE'].map(v=>`<button data-v="${v}" class="${v===vf?'on':''}">${v||'All'}</button>`).join('');
+document.querySelectorAll('#vf button').forEach(b=>b.onclick=()=>{vf=b.dataset.v; document.querySelectorAll('#vf button').forEach(x=>x.classList.toggle('on',x===b)); table();});
+document.getElementById('rf').innerHTML += Object.keys(RULES).map(r=>`<option value="${r}">${r} · ${RULES[r]}</option>`).join('');
+document.getElementById('q').oninput = table; document.getElementById('rf').onchange = table;
+document.getElementById('close').onclick = shut; document.getElementById('shade').onclick = shut;
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') shut(); });
+window.addEventListener('hashchange', ()=>{ const id=location.hash.slice(1); if(id) open(id); });
+render(); demo();
+if(location.hash.length>1) open(location.hash.slice(1));
+</script>
+</body>
+</html>
