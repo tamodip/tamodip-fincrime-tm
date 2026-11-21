@@ -567,6 +567,10 @@ def decide(case, data, settings):
 
     if len(alerts) != len(case.get('alert_ids') or []):
         rfi.append(('RFI_PURPOSE_DOCUMENTS', [], 'some alerts in the case could not be found, so the activity cannot be confirmed'))
+    missing = [tid for a in alerts for tid in (a.get('transaction_ids') or []) if tid not in data.tx]
+    if missing or (alerts and not txs):
+        rfi.append(('RFI_PURPOSE_DOCUMENTS', [a['alert_id'] for a in alerts][:3],
+                    'the alerted transactions (%s) are not in the transaction records, so the activity cannot be checked against the documents' % (', '.join(missing[:3]) or 'none listed')))
 
     # ---- red flags in notes, chats and reports
     for code, ids, label in structural_flags(docs, cust, txs, data):
