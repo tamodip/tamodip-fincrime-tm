@@ -597,6 +597,12 @@ def decide(case, data, settings):
 
     # ---- per transaction explanation
     unexplained, explained, own_used = [], [], False
+    max_amt = {}
+    for a in alerts:
+        amts = [data.tx[x]['amount_gbp'] for x in a.get('transaction_ids') or [] if x in data.tx]
+        for x in a.get('transaction_ids') or []:
+            if amts:
+                max_amt[x] = max(max_amt.get(x, 0), max(amts))
     for t in txs:
         if t['transaction_id'] in list_ok:
             ex = explain_tx(t, cust, docs, txs)
@@ -619,6 +625,14 @@ def decide(case, data, settings):
             st = own_account_statement(t, cust, docs)
             if st:
                 ex = {'code': 'OWN_ACCOUNT', 'docs': [st], 'note': 'own funds moved back from %s' % st.id}
+        if ex is None:
+            mx = max_amt.get(t['transaction_id'], 0)
+            own_small = name_key(t.get('counterparty_name')) == name_key(cust.get('name')) and \
+                t['amount_gbp'] <= max((cust.get('declared') or {}).get('monthly_income_gbp') or 0, 2000) and t['amount_gbp'] < 0.25 * mx
+            if (own_small or (t['amount_gbp'] < 1000 and t['amount_gbp'] < 0.1 * mx)) and not any(
+                    a['rule_id'] in ('TM03', 'TM04', 'TM22', 'TM06') and t['transaction_id'] in (a.get('transaction_ids') or []) for a in alerts):
+                ex = {'code': 'WITHIN_PROFILE', 'docs': [], 'routine': True,
+                      'note': 'small everyday transfers such as %s are minor next to the %s that drove the alert' % (fmt_tx(t), money(mx))}
         if ex is None:
             unexplained.append(t)
             trace['checks'].append({'tx': t['transaction_id'], 'result': 'UNEXPLAINED', 'note': fmt_tx(t) + ' has no matching document'})
